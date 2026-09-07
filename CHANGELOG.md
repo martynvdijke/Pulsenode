@@ -1,3 +1,5 @@
+## [1.29.4](https://github.com/martynvdijke/synapse/compare/v1.29.3...v1.29.4) (2026-09-07)
+
 ## [1.29.3](https://github.com/martynvdijke/synapse/compare/v1.29.2...v1.29.3) (2026-09-05)
 
 
