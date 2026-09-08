@@ -1,3 +1,10 @@
+## [1.30.1](https://github.com/martynvdijke/synapse/compare/v1.30.0...v1.30.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/oauth2 to v0.37.0 ([#52](https://github.com/martynvdijke/synapse/issues/52)) ([84e657a](https://github.com/martynvdijke/synapse/commit/84e657ae2471e4f697431fd7a63d44005c814efb))
+
 # [1.30.0](https://github.com/martynvdijke/synapse/compare/v1.29.4...v1.30.0) (2026-09-08)
 
 
