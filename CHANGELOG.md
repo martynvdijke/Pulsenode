@@ -1,3 +1,10 @@
+# [1.30.0](https://github.com/martynvdijke/synapse/compare/v1.29.4...v1.30.0) (2026-09-08)
+
+
+### Features
+
+* **auth:** add Authelia OIDC login with session-or-token mutation auth ([65703a9](https://github.com/martynvdijke/synapse/commit/65703a9a3295ed38dabbf6c21b92f2996f77800a))
+
 ## [1.29.4](https://github.com/martynvdijke/synapse/compare/v1.29.3...v1.29.4) (2026-09-07)
 
 ## [1.29.3](https://github.com/martynvdijke/synapse/compare/v1.29.2...v1.29.3) (2026-09-05)
