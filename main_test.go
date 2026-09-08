@@ -894,6 +894,7 @@ func setupRouter(app *App) *gin.Engine {
 	r.GET("/api/public/overview", app.PublicOverview)
 	r.GET("/api/check-setup", app.HandleCheckSetup)
 	r.POST("/api/login", app.HandleLogin)
+	app.registerOIDCRoutes(r)
 
 	apiV1 := r.Group("/api/v1")
 	{
@@ -901,7 +902,7 @@ func setupRouter(app *App) *gin.Engine {
 	}
 
 	api := r.Group("/api")
-	api.Use(authMiddleware())
+	api.Use(app.authMiddleware())
 	{
 		api.POST("/logout", app.HandleLogout)
 		api.GET("/settings", app.GetSettings)
@@ -938,7 +939,7 @@ func setupRouter(app *App) *gin.Engine {
 
 		// Mutation subgroup: session + bearer token required.
 		mut := api.Group("")
-		mut.Use(app.bearerTokenMiddleware())
+		app.useMutationAuth(mut)
 		{
 			mut.POST("/settings", app.SaveSettings)
 			mut.POST("/test/npm", app.TestNPM)

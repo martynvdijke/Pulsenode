@@ -21,11 +21,14 @@ import (
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
+	"github.com/coreos/go-oidc/v3/oidc"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 
 	"log/slog"
 	"synapse/internal/alerts"
+	"synapse/internal/auth"
 	"synapse/internal/authelia"
 	"synapse/internal/db"
 	"synapse/internal/docker"
@@ -43,6 +46,13 @@ var version = "1.29.4"
 type sessionInfo struct {
 	Expiry time.Time
 	UserID int64
+	// OIDC marks sessions created via Authelia OIDC login (vs local password).
+	// Mutation auth accepts a valid OIDC session alone; local sessions still
+	// require a bearer token on top. Email/Groups come from verified ID claims.
+	// ponytail: subject/groups live in the session, not new DB columns.
+	OIDC   bool
+	Email  string
+	Groups []string
 }
 
 var (
@@ -74,26 +84,44 @@ func cleanupSessions() {
 	}
 }
 
-func authMiddleware() gin.HandlerFunc {
+func (app *App) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		sessionID, err := c.Cookie("session")
-		if err != nil || sessionID == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
-			return
-		}
-		sessionStoreMu.Lock()
-		s, ok := sessionStore[sessionID]
-		if ok && time.Now().After(s.Expiry) {
-			delete(sessionStore, sessionID)
-			ok = false
-		}
-		sessionStoreMu.Unlock()
-		if !ok {
+		if sessionID, err := c.Cookie("session"); err == nil && sessionID != "" {
+			sessionStoreMu.Lock()
+			s, ok := sessionStore[sessionID]
+			if ok && time.Now().After(s.Expiry) {
+				delete(sessionStore, sessionID)
+				ok = false
+			}
+			sessionStoreMu.Unlock()
+			if ok {
+				c.Set("user_id", s.UserID)
+				c.Next()
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session expired"})
 			return
 		}
-		c.Set("user_id", s.UserID)
-		c.Next()
+		// OIDC on: a valid service-account bearer also satisfies the outer
+		// group (automation + NPM forward-auth bypass without a session).
+		// Reads stay session-or-token; mutations enforce their own OR rule.
+		// OIDC off: behavior unchanged (session required).
+		if app.oidcEnabled() {
+			if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				if secret := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); secret != "" {
+					if token, err := app.database.GetAPITokenByHash(hashToken(secret)); err == nil && token != nil &&
+						token.RevokedAt == nil && (token.ExpiresAt == nil || time.Now().Before(*token.ExpiresAt)) {
+						c.Set("api_token_id", token.ID)
+						c.Set("api_token_owner_id", token.OwnerID)
+						c.Set("user_id", token.OwnerID)
+						_ = app.database.TouchAPIToken(token.ID)
+						c.Next()
+						return
+					}
+				}
+			}
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
 	}
 }
 
@@ -113,7 +141,114 @@ func hashToken(secret string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// bearerTokenMiddleware requires a valid, non-revoked, non-expired bearer API
+// oidcEnabled reports whether Authelia OIDC login is configured.
+func (app *App) oidcEnabled() bool {
+	return app.oidcCfg.Enabled()
+}
+
+// initOIDC discovers the Authelia OIDC provider and builds the verifier.
+// Returns nil (disabled) when OIDC_CLIENT_ID is unset — local auth is then
+// unchanged. Discovery failure returns an error but must not crash startup;
+// callers check app.oidcProvider != nil before serving OIDC routes.
+func (app *App) initOIDC(ctx context.Context) error {
+	app.oidcCfg = auth.LoadFromEnv()
+	if !app.oidcCfg.Enabled() {
+		slog.Info("oidc disabled (OIDC_CLIENT_ID unset) — local auth only")
+		return nil
+	}
+	provider, err := oidc.NewProvider(ctx, app.oidcCfg.Issuer)
+	if err != nil {
+		return fmt.Errorf("oidc discovery %s: %w", app.oidcCfg.Issuer, err)
+	}
+	app.oidcProvider = provider
+	app.oidcVerifier = provider.Verifier(&oidc.Config{ClientID: app.oidcCfg.ClientID})
+	app.oauth2Cfg = &oauth2.Config{
+		ClientID:     app.oidcCfg.ClientID,
+		ClientSecret: app.oidcCfg.ClientSecret,
+		RedirectURL:  app.oidcCfg.RedirectURL,
+		Scopes:       app.oidcCfg.Scopes,
+		Endpoint:     provider.Endpoint(),
+	}
+	slog.Info("oidc enabled", "issuer", app.oidcCfg.Issuer)
+	return nil
+}
+
+// mutationAuthMiddleware enforces the OIDC OR rule for state-changing routes:
+// a valid OIDC session alone suffices, and a valid service-account bearer
+// token alone suffices (automation + NPM forward-auth bypass). A valid local
+// (password) session alone is NOT sufficient — it still needs a bearer token,
+// preserving the pre-OIDC secure-api-mutations behavior.
+// Only registered when OIDC is enabled; otherwise the legacy
+// authMiddleware()+bearerTokenMiddleware() chain applies.
+func (app *App) mutationAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Outer authMiddleware already validated a bearer (set when OIDC is
+		// on and the request carried a valid token without a session).
+		if _, ok := c.Get("api_token_id"); ok {
+			c.Next()
+			return
+		}
+		var sessionUser int64
+		if sid, err := c.Cookie("session"); err == nil && sid != "" {
+			sessionStoreMu.Lock()
+			s, ok := sessionStore[sid]
+			if ok && time.Now().After(s.Expiry) {
+				delete(sessionStore, sid)
+				ok = false
+			}
+			sessionStoreMu.Unlock()
+			if ok {
+				sessionUser = s.UserID
+				c.Set("user_id", s.UserID)
+				if s.OIDC {
+					c.Next()
+					return
+				}
+			}
+		}
+		auth := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			if secret := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); secret != "" {
+				if token, err := app.database.GetAPITokenByHash(hashToken(secret)); err == nil && token != nil &&
+					token.RevokedAt == nil && (token.ExpiresAt == nil || time.Now().Before(*token.ExpiresAt)) {
+					c.Set("api_token_id", token.ID)
+					c.Set("api_token_owner_id", token.OwnerID)
+					if sessionUser == 0 {
+						c.Set("user_id", token.OwnerID)
+					}
+					_ = app.database.TouchAPIToken(token.ID)
+					c.Next()
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+				return
+			}
+		}
+		if sessionUser != 0 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+	}
+}
+
+// useMutationAuth attaches mutation protection: legacy session+bearer chain
+// when OIDC is off, OR middleware when on. Call for the mut subgroup.
+func (app *App) useMutationAuth(mut *gin.RouterGroup) {
+	if app.oidcEnabled() {
+		mut.Use(app.mutationAuthMiddleware())
+		return
+	}
+	mut.Use(app.bearerTokenMiddleware())
+}
+
+// registerOIDCRoutes adds login/callback/status. Safe to call when disabled —
+// handlers return 404/503 then. Shared by main router and test router.
+func (app *App) registerOIDCRoutes(r *gin.Engine) {
+	r.GET("/api/auth/oidc/login", app.HandleOIDCLogin)
+	r.GET("/api/auth/oidc/callback", app.HandleOIDCCallback)
+	r.GET("/api/auth/oidc/status", app.HandleOIDCStatus)
+}
 // token on top of the session authentication applied by authMiddleware. It
 // stores the token id and owner id in the gin context for handlers that need
 // them. Failure aborts with 401 before any handler runs, so no write can occur.
@@ -155,6 +290,12 @@ type App struct {
 	kumaRegistry *kuma.Registry
 	npmRegistry  *npm.Registry
 	dockerClient *docker.Client
+
+	// OIDC (Authelia) login. Zero value = disabled; local auth unchanged.
+	oidcCfg      auth.Config
+	oidcProvider *oidc.Provider
+	oidcVerifier *oidc.IDTokenVerifier
+	oauth2Cfg    *oauth2.Config
 
 	mu            sync.Mutex
 	running       bool
@@ -327,6 +468,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Authelia OIDC discovery (disabled when OIDC_CLIENT_ID is unset).
+	// Discovery failure warns but does not crash; OIDC routes then 404/503.
+	if err := app.initOIDC(ctx); err != nil {
+		slog.Warn("oidc init failed — OIDC login unavailable", "error", err)
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
@@ -389,6 +536,7 @@ func main() {
 
 	r.GET("/api/check-setup", app.HandleCheckSetup)
 	r.POST("/api/login", app.HandleLogin)
+	app.registerOIDCRoutes(r)
 
 	// Public v1 API group. TRMNL devices poll /trmnl/stats without a session;
 	// the handler performs its own token verification.
@@ -400,7 +548,7 @@ func main() {
 	}
 
 	api := r.Group("/api")
-	api.Use(authMiddleware())
+	api.Use(app.authMiddleware())
 	{
 		// Session-only routes: reads, logout, and token lifecycle. Token
 		// lifecycle is the bootstrap path — a token cannot be required to
@@ -438,11 +586,13 @@ func main() {
 		api.POST("/tokens/:id/revoke", app.RevokeToken)
 		api.POST("/tokens/:id/rotate", app.RotateToken)
 
-		// Mutation subgroup: every state-changing route below requires a valid
-		// bearer API token in addition to the session. Future mutation routes
+		// Mutation subgroup: every state-changing route below requires auth.
+		// OIDC off: session AND bearer token (secure-api-mutations).
+		// OIDC on: valid OIDC session OR valid bearer token (automation +
+		// NPM forward-auth bypass for Bearer calls). Future mutation routes
 		// MUST be registered here so the protection cannot be omitted.
 		mut := api.Group("")
-		mut.Use(app.bearerTokenMiddleware())
+		app.useMutationAuth(mut)
 		{
 			mut.POST("/settings", app.SaveSettings)
 			mut.POST("/test/npm", app.TestNPM)
@@ -616,7 +766,130 @@ func (app *App) HandleLogout(c *gin.Context) {
 		sessionStoreMu.Unlock()
 	}
 	c.SetCookie("session", "", -1, "/", "", false, true)
+	for _, n := range []string{"oidc_state", "oidc_nonce", "oidc_verifier"} {
+		c.SetCookie(n, "", -1, "/", "", false, true)
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// HandleOIDCStatus reports whether OIDC login is configured (no secrets).
+func (app *App) HandleOIDCStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"enabled": app.oidcEnabled(), "issuer": app.oidcCfg.Issuer})
+}
+
+// HandleOIDCLogin starts Authorization Code + PKCE S256 against Authelia.
+func (app *App) HandleOIDCLogin(c *gin.Context) {
+	if !app.oidcEnabled() || app.oauth2Cfg == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "oidc not configured"})
+		return
+	}
+	state, err := auth.GenerateStateNonce()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state"})
+		return
+	}
+	nonce, err := auth.GenerateStateNonce()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate nonce"})
+		return
+	}
+	verifier, err := auth.GenerateVerifier()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate verifier"})
+		return
+	}
+	c.SetCookie("oidc_state", state, 300, "/", "", false, true)
+	c.SetCookie("oidc_nonce", nonce, 300, "/", "", false, true)
+	c.SetCookie("oidc_verifier", verifier, 300, "/", "", false, true)
+	url := app.oauth2Cfg.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("nonce", nonce),
+		oauth2.SetAuthURLParam("code_challenge", auth.ChallengeS256(verifier)),
+		oauth2.SetAuthURLParam("code_challenge_method", "S256"))
+	c.Redirect(http.StatusFound, url)
+}
+
+// HandleOIDCCallback validates state/nonce, exchanges the code, verifies the
+// ID token, enforces email_verified, links/provisions the user by email, and
+// creates an OIDC session.
+func (app *App) HandleOIDCCallback(c *gin.Context) {
+	if !app.oidcEnabled() || app.oauth2Cfg == nil || app.oidcVerifier == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "oidc not configured"})
+		return
+	}
+	state, err := c.Cookie("oidc_state")
+	if err != nil || state == "" || c.Query("state") != state {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid state"})
+		return
+	}
+	nonce, err := c.Cookie("oidc_nonce")
+	if err != nil || nonce == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid nonce"})
+		return
+	}
+	verifier, err := c.Cookie("oidc_verifier")
+	if err != nil || verifier == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid verifier"})
+		return
+	}
+	if ec := c.Query("error"); ec != "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "oidc: " + ec})
+		return
+	}
+	code := c.Query("code")
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing code"})
+		return
+	}
+	ctx := c.Request.Context()
+	token, err := app.oauth2Cfg.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", verifier))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "code exchange failed"})
+		return
+	}
+	rawID, ok := token.Extra("id_token").(string)
+	if !ok || rawID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing id_token"})
+		return
+	}
+	idToken, err := app.oidcVerifier.Verify(ctx, rawID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid id_token"})
+		return
+	}
+	var nonceClaims struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := idToken.Claims(&nonceClaims); err != nil || nonceClaims.Nonce != nonce {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid nonce"})
+		return
+	}
+	var claims auth.Claims
+	if err := idToken.Claims(&claims); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+		return
+	}
+	if err := claims.Validate(); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	userID, err := auth.LinkOrProvision(app.database, claims.Email, claims.Sub)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to provision user"})
+		return
+	}
+	sessionID := generateSessionID()
+	if sessionID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+		return
+	}
+	sessionStoreMu.Lock()
+	sessionStore[sessionID] = sessionInfo{Expiry: time.Now().Add(24 * time.Hour), UserID: userID, OIDC: true, Email: claims.Email, Groups: claims.Groups}
+	sessionStoreMu.Unlock()
+	setSessionCookie(c, sessionID)
+	for _, n := range []string{"oidc_state", "oidc_nonce", "oidc_verifier"} {
+		c.SetCookie(n, "", -1, "/", "", false, true)
+	}
+	c.Redirect(http.StatusFound, "/")
 }
 
 // sessionUserID returns the authenticated user id set by authMiddleware.

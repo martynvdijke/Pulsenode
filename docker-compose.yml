@@ -31,6 +31,14 @@ services:
       # AUTHELIA_CONFIG_PATH: /config/authelia/configuration.yml
       # AUTHELIA_DB_PATH: /config/authelia/db.sqlite3
       # AUTHELIA_SYNC_ENABLED: "true"
+      # Optional: Authelia OIDC login for synapse's own UI/API
+      # (Authorization Code + PKCE S256 via coreos/go-oidc).
+      # This synapse is NOT Matrix Synapse — native Matrix OIDC is out of scope.
+      # OIDC_ISSUER: https://authelia.vandijke.xyz
+      # OIDC_CLIENT_ID: synapse
+      # OIDC_CLIENT_SECRET: changeme  # or mount a secret file + OIDC_CLIENT_SECRET_FILE
+      # OIDC_REDIRECT_URL: https://synapse.example.com/api/auth/oidc/callback
+      # OIDC_SCOPES: "openid email profile groups"
       # Optional: periodic sync interval (minutes, 0 = manual only)
       # SYNC_INTERVAL: 60
       # Optional: Docker event tracking (requires the socket mount above)

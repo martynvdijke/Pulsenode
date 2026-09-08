@@ -23,9 +23,16 @@
             </div>
             <button type="submit" class="btn btn-primary w-100">Login</button>
         </form>
+        <div id="oidc-block" class="d-none mt-3">
+            <hr>
+            <a href="/api/auth/oidc/login" class="btn btn-outline-primary w-100">Login with Authelia</a>
+        </div>
     </div>
     <script src="/static/js/eink.js"></script>
     <script>
+        fetch('/api/auth/oidc/status').then(r => r.json()).then(s => {
+            if (s.enabled) document.getElementById('oidc-block').classList.remove('d-none');
+        }).catch(() => {});
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const fd = new FormData(e.target);

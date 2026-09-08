@@ -136,6 +136,20 @@ Open **[http://localhost:6270](http://localhost:6270)** and complete the initial
 | `ALERT_EVAL_INTERVAL_SECONDS` | `60` | Interval between alert rule evaluation ticks (10–3600) |
 | `ALERT_REMINDER_MINUTES` | `0` | Repeat-notification interval for sustained open alerts in minutes (0 = no reminders) |
 | `KUMA_DEFAULT_TAGS` | — | Default tag IDs applied to newly created Kuma monitors (comma-separated or JSON array, e.g. `1,2` or `[1,2]`) |
+| `OIDC_ISSUER` | `https://authelia.vandijke.xyz` | Authelia OIDC issuer (empty `OIDC_CLIENT_ID` disables OIDC) |
+| `OIDC_CLIENT_ID` | — | OIDC client ID; unset = local auth only |
+| `OIDC_CLIENT_SECRET` | — | OIDC client secret (or `OIDC_CLIENT_SECRET_FILE` for a secret mount) |
+| `OIDC_REDIRECT_URL` | — | Exact callback URL registered in Authelia, e.g. `https://synapse.example.com/api/auth/oidc/callback` |
+| `OIDC_SCOPES` | `openid email profile groups` | Requested OIDC scopes |
+
+### OIDC login (Authelia)
+
+> This synapse is the Authelia sync tool, not Matrix Synapse — native Matrix OIDC/SSO is out of scope.
+
+- Browser flow: `GET /api/auth/oidc/login` → Authelia (Authorization Code + PKCE S256) → `GET /api/auth/oidc/callback` verifies `state`/`nonce` and the ID token (issuer, audience, expiry, RS256), requires `email_verified=true`, then links/provisions a local user by verified email and creates a session.
+- Mutation auth is OR: a valid OIDC session **or** a valid service-account bearer token (`Authorization: Bearer …`) authorizes `POST/PUT/PATCH/DELETE /api/*`. Service-token calls bypass NPM forward-auth; browser UI goes through OIDC after cutover.
+- Public reads (`GET /overview`, `GET /api/public/overview`, health/metrics, `GET /api/v1/trmnl/stats`) stay anonymous (200 without auth).
+- OIDC users get an unusable password marker and can only log in via OIDC.
 
 ## API Endpoints
 
@@ -146,6 +160,9 @@ Open **[http://localhost:6270](http://localhost:6270)** and complete the initial
 | `GET` | `/api/check-setup` | Check if admin account exists |
 | `POST` | `/api/login` | Login or create initial admin account |
 | `POST` | `/api/logout` | Logout |
+| `GET` | `/api/auth/oidc/status` | OIDC enabled flag + issuer (public, no secrets) |
+| `GET` | `/api/auth/oidc/login` | Start Authelia OIDC login (redirect) |
+| `GET` | `/api/auth/oidc/callback` | OIDC callback (code exchange, session creation) |
 
 ### Settings
 
