@@ -25,56 +25,56 @@ import (
 // (GET /api/nginx/proxy-hosts). The API has no nested "forwarding" object and
 // no "container" field — forward_* fields are flat on the host.
 type ProxyHost struct {
-	ID             int            `json:"id"`
-	DomainNames    []string       `json:"domain_names"`
-	ForwardHost    string         `json:"forward_host"`
-	ForwardPort    int            `json:"forward_port"`
-	ForwardScheme  string         `json:"forward_scheme"`
-	Enabled        bool           `json:"enabled"`
-	SSLForced      bool           `json:"ssl_forced"`
-	CertificateID  int            `json:"certificate_id"`
-	HTTP2Support   bool           `json:"http2_support"`
-	HSTSEnabled    bool           `json:"hsts_enabled"`
-	HSTSSubdomains bool           `json:"hsts_subdomains"`
-	BlockExploits  bool           `json:"block_exploits"`
-	CachingEnabled bool           `json:"caching_enabled"`
-	AllowWebsocketUpgrade bool    `json:"allow_websocket_upgrade"`
-	AccessListID   int            `json:"access_list_id"`
-	AdvancedConfig string         `json:"advanced_config"`
-	Locations      []ProxyLocation `json:"locations"`
-	Meta           map[string]any `json:"meta"`
+	ID                    int             `json:"id"`
+	DomainNames           []string        `json:"domain_names"`
+	ForwardHost           string          `json:"forward_host"`
+	ForwardPort           int             `json:"forward_port"`
+	ForwardScheme         string          `json:"forward_scheme"`
+	Enabled               bool            `json:"enabled"`
+	SSLForced             bool            `json:"ssl_forced"`
+	CertificateID         int             `json:"certificate_id"`
+	HTTP2Support          bool            `json:"http2_support"`
+	HSTSEnabled           bool            `json:"hsts_enabled"`
+	HSTSSubdomains        bool            `json:"hsts_subdomains"`
+	BlockExploits         bool            `json:"block_exploits"`
+	CachingEnabled        bool            `json:"caching_enabled"`
+	AllowWebsocketUpgrade bool            `json:"allow_websocket_upgrade"`
+	AccessListID          int             `json:"access_list_id"`
+	AdvancedConfig        string          `json:"advanced_config"`
+	Locations             []ProxyLocation `json:"locations"`
+	Meta                  map[string]any  `json:"meta"`
 }
 
 // ProxyLocation is a location block of an NPM proxy host.
 type ProxyLocation struct {
-	Path            string `json:"path"`
-	ForwardHost     string `json:"forward_host"`
-	ForwardPort     int    `json:"forward_port"`
-	ForwardScheme   string `json:"forward_scheme"`
-	AdvancedConfig  string `json:"advanced_config"`
+	Path           string `json:"path"`
+	ForwardHost    string `json:"forward_host"`
+	ForwardPort    int    `json:"forward_port"`
+	ForwardScheme  string `json:"forward_scheme"`
+	AdvancedConfig string `json:"advanced_config"`
 }
 
 // ProxyHostCreate is the payload accepted by NPM when creating or updating a
 // proxy host. Zero-valued optional fields are omitted so NPM applies its own
 // defaults for unset options.
 type ProxyHostCreate struct {
-	DomainNames            []string       `json:"domain_names"`
-	ForwardScheme          string         `json:"forward_scheme"`
-	ForwardHost            string         `json:"forward_host"`
-	ForwardPort            int            `json:"forward_port"`
-	Enabled                bool           `json:"enabled"`
-	SSLForced              bool           `json:"ssl_forced,omitempty"`
-	CertificateID          int            `json:"certificate_id,omitempty"`
-	HTTP2Support           bool           `json:"http2_support,omitempty"`
-	HSTSEnabled            bool           `json:"hsts_enabled,omitempty"`
-	HSTSSubdomains         bool           `json:"hsts_subdomains,omitempty"`
-	BlockExploits          bool           `json:"block_exploits,omitempty"`
-	CachingEnabled         bool           `json:"caching_enabled,omitempty"`
-	AllowWebsocketUpgrade  bool           `json:"allow_websocket_upgrade,omitempty"`
-	AccessListID           int            `json:"access_list_id,omitempty"`
-	AdvancedConfig         string         `json:"advanced_config,omitempty"`
-	Locations              []ProxyLocation `json:"locations,omitempty"`
-	Meta                   map[string]any `json:"meta,omitempty"`
+	DomainNames           []string        `json:"domain_names"`
+	ForwardScheme         string          `json:"forward_scheme"`
+	ForwardHost           string          `json:"forward_host"`
+	ForwardPort           int             `json:"forward_port"`
+	Enabled               bool            `json:"enabled"`
+	SSLForced             bool            `json:"ssl_forced,omitempty"`
+	CertificateID         int             `json:"certificate_id,omitempty"`
+	HTTP2Support          bool            `json:"http2_support,omitempty"`
+	HSTSEnabled           bool            `json:"hsts_enabled,omitempty"`
+	HSTSSubdomains        bool            `json:"hsts_subdomains,omitempty"`
+	BlockExploits         bool            `json:"block_exploits,omitempty"`
+	CachingEnabled        bool            `json:"caching_enabled,omitempty"`
+	AllowWebsocketUpgrade bool            `json:"allow_websocket_upgrade,omitempty"`
+	AccessListID          int             `json:"access_list_id,omitempty"`
+	AdvancedConfig        string          `json:"advanced_config,omitempty"`
+	Locations             []ProxyLocation `json:"locations,omitempty"`
+	Meta                  map[string]any  `json:"meta,omitempty"`
 }
 
 type ProxyEntry struct {
@@ -146,7 +146,7 @@ func NewClient(url, user, pass string) *Client {
 	}
 }
 
-func (c *Client) Login() error {
+func (c *Client) Login(ctx context.Context) error {
 	start := time.Now()
 	logging.LogDebug("npm", "Logging into NPM via /api/tokens",
 		slog.String("npm_url", c.url),
@@ -157,7 +157,7 @@ func (c *Client) Login() error {
 		"secret":   c.pass,
 	})
 
-	req, err := http.NewRequest("POST", c.url+"/api/tokens", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.url+"/api/tokens", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create login request: %w", err)
 	}
@@ -229,15 +229,15 @@ func (c *Client) Login() error {
 	return nil
 }
 
-func (c *Client) ensureLoggedIn() error {
+func (c *Client) ensureLoggedIn(ctx context.Context) error {
 	if c.token != "" && time.Now().Before(c.tokenExpiry) {
 		return nil
 	}
-	return c.Login()
+	return c.Login(ctx)
 }
 
-func (c *Client) GetProxyHosts() ([]ProxyEntry, error) {
-	_, span := c.tracer.Start(context.Background(), "GetProxyHosts",
+func (c *Client) GetProxyHosts(ctx context.Context) ([]ProxyEntry, error) {
+	_, span := c.tracer.Start(ctx, "GetProxyHosts",
 		trace.WithAttributes(attribute.String("npm_url", c.url)),
 	)
 	defer span.End()
@@ -247,7 +247,7 @@ func (c *Client) GetProxyHosts() ([]ProxyEntry, error) {
 		slog.String("npm_url", c.url),
 	)
 
-	hosts, err := c.fetchHosts()
+	hosts, err := c.fetchHosts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -260,10 +260,10 @@ func (c *Client) GetProxyHosts() ([]ProxyEntry, error) {
 
 		for _, domain := range host.DomainNames {
 			entries = append(entries, ProxyEntry{
-				CNAME:     domain,
-				Host:      host.ForwardHost,
-				Port:      host.ForwardPort,
-				Protocol:  host.ForwardScheme,
+				CNAME:    domain,
+				Host:     host.ForwardHost,
+				Port:     host.ForwardPort,
+				Protocol: host.ForwardScheme,
 			})
 		}
 	}
@@ -284,18 +284,18 @@ var npmTracer = otel.Tracer("npm")
 // (the dashboard fires /api/status and /api/proxies in a burst) may both
 // miss the cache and fetch once each; the mutex keeps the cached fields
 // safe.
-func (c *Client) fetchHosts() ([]ProxyHost, error) {
+func (c *Client) fetchHosts(ctx context.Context) ([]ProxyHost, error) {
 	if hosts, ok := c.cachedHosts(); ok {
 		return hosts, nil
 	}
 
 	start := time.Now()
 	url := fmt.Sprintf("%s/api/nginx/proxy-hosts", c.url)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.ensureLoggedIn(); err != nil {
+	if err := c.ensureLoggedIn(ctx); err != nil {
 		logging.LogError("npm", "Failed to authenticate to NPM",
 			slog.String("error", err.Error()),
 			slog.Duration("duration", time.Since(start)),
@@ -344,14 +344,14 @@ func (c *Client) fetchHosts() ([]ProxyHost, error) {
 // GetProxyHostsFull returns all proxy hosts for the instance including
 // disabled ones, with full configuration fields (SSL, locations, advanced
 // config, meta). Used by service linking and reconciliation.
-func (c *Client) GetProxyHostsFull() ([]ProxyHost, error) {
-	_, span := c.tracer.Start(context.Background(), "GetProxyHostsFull",
+func (c *Client) GetProxyHostsFull(ctx context.Context) ([]ProxyHost, error) {
+	_, span := c.tracer.Start(ctx, "GetProxyHostsFull",
 		trace.WithAttributes(attribute.String("npm_url", c.url)),
 	)
 	defer span.End()
 
 	start := time.Now()
-	hosts, err := c.fetchHosts()
+	hosts, err := c.fetchHosts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +378,7 @@ func (c *Client) CreateProxyHost(cfg ProxyHostCreate) (ProxyHost, error) {
 		return created, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if err := c.ensureLoggedIn(); err != nil {
+	if err := c.ensureLoggedIn(context.Background()); err != nil {
 		return created, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
@@ -418,7 +418,7 @@ func (c *Client) UpdateProxyHost(id int, cfg ProxyHostCreate) (ProxyHost, error)
 		return updated, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if err := c.ensureLoggedIn(); err != nil {
+	if err := c.ensureLoggedIn(context.Background()); err != nil {
 		return updated, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
@@ -444,10 +444,10 @@ func (c *Client) UpdateProxyHost(id int, cfg ProxyHostCreate) (ProxyHost, error)
 }
 
 // GetProxyHosts is the legacy free function wrapper for backward compat.
-func GetProxyHosts(npmHost, npmUser, npmPass string) ([]ProxyEntry, error) {
+func GetProxyHosts(ctx context.Context, npmHost, npmUser, npmPass string) ([]ProxyEntry, error) {
 	c := NewClient(npmHost, npmUser, npmPass)
-	if err := c.Login(); err != nil {
+	if err := c.Login(ctx); err != nil {
 		return nil, err
 	}
-	return c.GetProxyHosts()
+	return c.GetProxyHosts(ctx)
 }

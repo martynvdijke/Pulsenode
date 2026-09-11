@@ -46,8 +46,8 @@ type ReconcileResult struct {
 // the live NPM proxy hosts and Kuma monitors of linked services, creating and
 // updating targets that drift. Only services with a ServiceLink reconcile —
 // unlinked services keep the existing coverage-based alerting.
-func RunReconcile(composePath string, npmClients []npm.InstanceClient, kumaClients []kuma.InstanceClient, database *db.DB, opts ReconcileOptions, onProgress ProgressFn) ReconcileResult {
-	_, span := tracer.Start(context.Background(), "RunReconcile",
+func RunReconcile(ctx context.Context, composePath string, npmClients []npm.InstanceClient, kumaClients []kuma.InstanceClient, database *db.DB, opts ReconcileOptions, onProgress ProgressFn) ReconcileResult {
+	_, span := tracer.Start(ctx, "RunReconcile",
 		trace.WithAttributes(attribute.String("compose_path", composePath)),
 	)
 	defer span.End()
@@ -135,7 +135,7 @@ func RunReconcile(composePath string, npmClients []npm.InstanceClient, kumaClien
 	npmLive := map[int][]npm.ProxyHost{}
 	for _, ic := range npmClients {
 		npmByInst[ic.InstanceID] = ic.Client
-		hosts, err := ic.Client.GetProxyHostsFull()
+		hosts, err := ic.Client.GetProxyHostsFull(ctx)
 		if err != nil {
 			logging.LogWarn("sync", "Failed to fetch NPM proxy hosts",
 				slog.Int("instance_id", ic.InstanceID),

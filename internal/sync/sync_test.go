@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1124,7 +1125,7 @@ func TestRunDockerSyncFanOut(t *testing.T) {
 	c1 := mockKumaClient(t, 1, &add1, nil)
 	c2 := mockKumaClient(t, 2, &add2, nil)
 
-	run := RunDockerSync("../../testdata/docker-compose.yml", []kuma.InstanceClient{c1, c2}, d, func(p Progress) {})
+	run := RunDockerSync(context.Background(), "../../testdata/docker-compose.yml", []kuma.InstanceClient{c1, c2}, d, func(p Progress) {})
 
 	if run.Status != "completed" {
 		t.Errorf("expected status completed, got %q (err=%q)", run.Status, run.ErrorMessage)
@@ -1165,7 +1166,7 @@ func TestRunDockerSyncFanOut(t *testing.T) {
 func TestRunDockerSyncEmptyClients(t *testing.T) {
 	d := setupTestDB(t)
 
-	run := RunDockerSync("../../testdata/docker-compose.yml", nil, d, func(p Progress) {})
+	run := RunDockerSync(context.Background(), "../../testdata/docker-compose.yml", nil, d, func(p Progress) {})
 
 	if run.Status != "error" {
 		t.Errorf("expected status error, got %q", run.Status)
@@ -1184,7 +1185,7 @@ func TestRunDockerSyncSkipsExisting(t *testing.T) {
 	var addCalls int32
 	c := mockKumaClient(t, 1, &addCalls, existing)
 
-	run := RunDockerSync("../../testdata/docker-compose.yml", []kuma.InstanceClient{c}, d, func(p Progress) {})
+	run := RunDockerSync(context.Background(), "../../testdata/docker-compose.yml", []kuma.InstanceClient{c}, d, func(p Progress) {})
 
 	if run.Status != "completed" {
 		t.Errorf("expected completed, got %q (err=%q)", run.Status, run.ErrorMessage)
@@ -1203,7 +1204,7 @@ func TestGetDockerServicesWithStatusMultiInstance(t *testing.T) {
 	c1 := mockKumaClient(t, 1, nil, []kuma.KumaMonitor{{ID: 100, Name: "nginx-web", Type: "http"}})
 	c2 := mockKumaClient(t, 2, nil, nil)
 
-	services, err := GetDockerServicesWithStatus("../../testdata/docker-compose.yml", []kuma.InstanceClient{c1, c2})
+	services, err := GetDockerServicesWithStatus(context.Background(), "../../testdata/docker-compose.yml", []kuma.InstanceClient{c1, c2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1230,7 +1231,7 @@ func TestGetDockerServicesWithStatusMultiInstance(t *testing.T) {
 }
 
 func TestGetDockerServicesWithStatusEmptyClients(t *testing.T) {
-	services, err := GetDockerServicesWithStatus("../../testdata/docker-compose.yml", nil)
+	services, err := GetDockerServicesWithStatus(context.Background(), "../../testdata/docker-compose.yml", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1407,7 +1408,7 @@ func TestGetNPMProxiesWithStatus(t *testing.T) {
 	// One Kuma client with "api.example.com" monitor.
 	kumaClient := mockKumaClient(t, 1, nil, []kuma.KumaMonitor{{ID: 42, Name: "api.example.com", Type: "http"}})
 
-	proxies, err := GetNPMProxiesWithStatus([]npm.InstanceClient{c1, c2}, []kuma.InstanceClient{kumaClient})
+	proxies, err := GetNPMProxiesWithStatus(context.Background(), []npm.InstanceClient{c1, c2}, []kuma.InstanceClient{kumaClient})
 	if err != nil {
 		t.Fatalf("GetNPMProxiesWithStatus: %v", err)
 	}
@@ -1435,7 +1436,7 @@ func TestGetNPMProxiesWithStatus(t *testing.T) {
 
 func TestGetNPMProxiesWithStatusEmptyClients(t *testing.T) {
 	// No NPM clients should return empty.
-	proxies, err := GetNPMProxiesWithStatus(nil, nil)
+	proxies, err := GetNPMProxiesWithStatus(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("GetNPMProxiesWithStatus nil: %v", err)
 	}
@@ -1452,7 +1453,7 @@ func TestGetNPMProxiesWithStatusPartialFailure(t *testing.T) {
 	})
 	kumaClient := mockKumaClient(t, 1, nil, []kuma.KumaMonitor{{ID: 42, Name: "api.example.com", Type: "http"}})
 
-	proxies, err := GetNPMProxiesWithStatus([]npm.InstanceClient{c1, c2}, []kuma.InstanceClient{kumaClient})
+	proxies, err := GetNPMProxiesWithStatus(context.Background(), []npm.InstanceClient{c1, c2}, []kuma.InstanceClient{kumaClient})
 	if err == nil {
 		t.Fatal("expected aggregate error for failing instance 1")
 	}
@@ -1474,7 +1475,7 @@ func TestRunNPMSync(t *testing.T) {
 	var kumaAddCalls int32
 	kumaClient := mockKumaClient(t, 1, &kumaAddCalls, nil)
 
-	run := RunNPMSync([]npm.InstanceClient{npmClient}, []kuma.InstanceClient{kumaClient}, d, func(p Progress) {})
+	run := RunNPMSync(context.Background(), []npm.InstanceClient{npmClient}, []kuma.InstanceClient{kumaClient}, d, func(p Progress) {})
 
 	if run.Status != "completed" {
 		t.Errorf("expected status completed, got %q (err=%q)", run.Status, run.ErrorMessage)
@@ -1490,7 +1491,7 @@ func TestRunNPMSync(t *testing.T) {
 func TestRunNPMSyncEmptyClients(t *testing.T) {
 	d := setupTestDB(t)
 
-	run := RunNPMSync(nil, nil, d, func(p Progress) {})
+	run := RunNPMSync(context.Background(), nil, nil, d, func(p Progress) {})
 	if run.Status != "error" {
 		t.Errorf("expected status error, got %q", run.Status)
 	}
@@ -1510,7 +1511,7 @@ func TestRunNPMSyncSkipsExisting(t *testing.T) {
 	// Kuma already has a monitor for "existing.example.com"
 	kumaClient := mockKumaClient(t, 1, &kumaAddCalls, []kuma.KumaMonitor{{ID: 100, Name: "existing.example.com", Type: "http"}})
 
-	run := RunNPMSync([]npm.InstanceClient{npmClient}, []kuma.InstanceClient{kumaClient}, d, func(p Progress) {})
+	run := RunNPMSync(context.Background(), []npm.InstanceClient{npmClient}, []kuma.InstanceClient{kumaClient}, d, func(p Progress) {})
 
 	if run.Status != "completed" {
 		t.Errorf("expected completed, got %q (err=%q)", run.Status, run.ErrorMessage)

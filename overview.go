@@ -135,7 +135,7 @@ func (app *App) PublicOverview(c *gin.Context) {
 	npmByDomain := map[string]overviewProxy{}
 	proxies := []overviewProxy{}
 	for _, ic := range npmClients {
-		hosts, err := ic.Client.GetProxyHostsFull()
+		hosts, err := ic.Client.GetProxyHostsFull(c.Request.Context())
 		if err != nil {
 			continue
 		}

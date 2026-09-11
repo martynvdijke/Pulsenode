@@ -1,6 +1,7 @@
 package npm
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -82,7 +83,7 @@ func (r *Registry) getOrCreate(id int, url, user, pass string) (*Client, error) 
 	}
 
 	c := NewClient(url, user, pass)
-	if err := c.Login(); err != nil {
+	if err := c.Login(context.Background()); err != nil {
 		return nil, err
 	}
 

@@ -1,6 +1,7 @@
 package npm
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -79,7 +80,7 @@ func TestGetProxyHosts_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	entries, err := GetProxyHosts(srv.URL, "admin", "secret")
+	entries, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestGetProxyHosts_NoContainerKept(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	entries, err := GetProxyHosts(srv.URL, "admin", "secret")
+	entries, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestGetProxyHosts_DisabledSkipped(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	entries, err := GetProxyHosts(srv.URL, "admin", "secret")
+	entries, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestGetProxyHosts_NoDomainsSkips(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	entries, err := GetProxyHosts(srv.URL, "admin", "secret")
+	entries, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestGetProxyHosts_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := GetProxyHosts(server.URL, "admin", "wrong")
+	_, err := GetProxyHosts(context.Background(), server.URL, "admin", "wrong")
 	if err == nil {
 		t.Fatal("expected error for unauthorized request")
 	}
@@ -232,7 +233,7 @@ func TestGetProxyHosts_ServerError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	_, err := GetProxyHosts(srv.URL, "admin", "secret")
+	_, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err == nil {
 		t.Fatal("expected error for server error")
 	}
@@ -244,7 +245,7 @@ func TestGetProxyHosts_EmptyResponse(t *testing.T) {
 		w.Write([]byte("[]"))
 	})
 
-	entries, err := GetProxyHosts(srv.URL, "admin", "secret")
+	entries, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestGetProxyHosts_InvalidJSON(t *testing.T) {
 		w.Write([]byte("not json"))
 	})
 
-	_, err := GetProxyHosts(srv.URL, "admin", "secret")
+	_, err := GetProxyHosts(context.Background(), srv.URL, "admin", "secret")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -335,7 +336,7 @@ func TestGetProxyHostsFull(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 	c := NewClient(srv.URL, "admin", "secret")
-	hosts, err := c.GetProxyHostsFull()
+	hosts, err := c.GetProxyHostsFull(context.Background())
 	if err != nil {
 		t.Fatalf("GetProxyHostsFull: %v", err)
 	}

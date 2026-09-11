@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,7 +140,7 @@ func (app *App) resolveNPMTarget(link *db.ServiceLink, instanceID int, hostName,
 	if strings.TrimSpace(hostName) == "" && !ensureMissing {
 		return &apiError{http.StatusBadRequest, "npm_host_name is required when linking to an NPM instance"}
 	}
-	hosts, err := client.GetProxyHostsFull()
+	hosts, err := client.GetProxyHostsFull(context.Background())
 	if err != nil {
 		return &apiError{http.StatusBadGateway, err.Error()}
 	}
@@ -598,7 +599,7 @@ func (app *App) NPMProxyHosts(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		hosts, err := client.GetProxyHostsFull()
+		hosts, err := client.GetProxyHostsFull(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
@@ -609,7 +610,7 @@ func (app *App) NPMProxyHosts(c *gin.Context) {
 	} else {
 		clients, _ := app.npmRegistry.All()
 		for _, ic := range clients {
-			hosts, err := ic.Client.GetProxyHostsFull()
+			hosts, err := ic.Client.GetProxyHostsFull(c.Request.Context())
 			if err != nil {
 				logging.LogWarn("app", "Failed to fetch proxy hosts from NPM instance",
 					slog.Int("instance_id", ic.InstanceID),

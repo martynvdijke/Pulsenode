@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,30 +17,35 @@ type httpMetrics struct {
 	durationHisto metric.Float64Histogram
 }
 
-var metrics *httpMetrics
+var (
+	metrics     *httpMetrics
+	metricsOnce sync.Once
+)
 
 func initHTTPMetrics() {
-	meter := otel.Meter(meterName)
+	metricsOnce.Do(func() {
+		meter := otel.Meter(meterName)
 
-	counter, err := meter.Int64Counter("otel_http_requests_total",
-		metric.WithDescription("Total number of HTTP requests"),
-	)
-	if err != nil {
-		return
-	}
+		counter, err := meter.Int64Counter("otel_http_requests_total",
+			metric.WithDescription("Total number of HTTP requests"),
+		)
+		if err != nil {
+			return
+		}
 
-	histo, err := meter.Float64Histogram("otel_http_request_duration_seconds",
-		metric.WithDescription("Duration of HTTP requests in seconds"),
-		metric.WithUnit("s"),
-	)
-	if err != nil {
-		return
-	}
+		histo, err := meter.Float64Histogram("otel_http_request_duration_seconds",
+			metric.WithDescription("Duration of HTTP requests in seconds"),
+			metric.WithUnit("s"),
+		)
+		if err != nil {
+			return
+		}
 
-	metrics = &httpMetrics{
-		requestCount:  counter,
-		durationHisto: histo,
-	}
+		metrics = &httpMetrics{
+			requestCount:  counter,
+			durationHisto: histo,
+		}
+	})
 }
 
 // MetricsMiddleware returns a Gin middleware that records HTTP request count

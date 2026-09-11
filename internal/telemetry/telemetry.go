@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/log/global"
+	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -28,6 +29,47 @@ import (
 )
 
 var Tracer trace.Tracer = trace.NewNoopTracerProvider().Tracer("synapse")
+
+// multiHandler fans a log record out to several slog handlers. It is used to
+// keep the existing handler (the logging ring buffer that backs /api/logs and
+// the SSE stream) while also exporting records over OTLP.
+type multiHandler struct {
+	handlers []slog.Handler
+}
+
+func (m multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, r.Level) {
+			_ = h.Handle(ctx, r.Clone())
+		}
+	}
+	return nil
+}
+
+func (m multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		next[i] = h.WithAttrs(attrs)
+	}
+	return multiHandler{handlers: next}
+}
+
+func (m multiHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		next[i] = h.WithGroup(name)
+	}
+	return multiHandler{handlers: next}
+}
 
 type Providers struct {
 	TracerProvider *sdktrace.TracerProvider
@@ -57,11 +99,16 @@ func getOTLPProtocol() string {
 	return p
 }
 
-func buildResource(serviceName string) (*resource.Resource, error) {
+func buildResource(serviceName, version string) (*resource.Resource, error) {
+	attrs := []attribute.KeyValue{
+		semconv.ServiceName(serviceName),
+	}
+	if version != "" {
+		attrs = append(attrs, semconv.ServiceVersion(version))
+	}
 	opts := []resource.Option{
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-		),
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(attrs...),
 	}
 	if ra := os.Getenv("OTEL_RESOURCE_ATTRIBUTES"); ra != "" {
 		pairs := strings.Split(ra, ",")
@@ -102,16 +149,31 @@ func configureSampler() sdktrace.Sampler {
 	case "parentbased_traceidratio":
 		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
 	default:
-		return sdktrace.AlwaysSample()
+		// ParentBased so an upstream traceparent sampling decision is honored
+		// (a downstream service must not force-sample an unsampled parent).
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	}
 }
 
-func InitTelemetry(dbEndpoint string) (*Providers, error) {
+func InitTelemetry(dbEndpoint, version string, baseHandler slog.Handler) (*Providers, error) {
 	endpoint := getOTLPEndpoint(dbEndpoint)
 	serviceName := getServiceName()
 	protocol := getOTLPProtocol()
 
-	res, err := buildResource(serviceName)
+	// W3C TraceContext + Baggage is the OTel default today; set it explicitly
+	// so otelgin/otelhttp propagation can't drift with future SDK defaults.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{},
+	))
+
+	// The exporters below are created with no options, so the SDK reads the
+	// standard OTEL_EXPORTER_OTLP_* env vars. Publish the configured collector
+	// so a DB/UI endpoint actually reaches them (previously it was ignored).
+	if endpoint != "" {
+		os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+	}
+
+	res, err := buildResource(serviceName, version)
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +243,22 @@ func InitTelemetry(dbEndpoint string) (*Providers, error) {
 		)
 		global.SetLoggerProvider(lp)
 
-		// Wire the OTel slog bridge with trace context injection.
+		// Wire the OTel slog bridge with trace context injection. When a base
+		// handler is supplied (the running logger, e.g. logging's ring buffer
+		// that backs the Logs tab and SSE stream), tee to it so telemetry does
+		// not silently disable those. Teeing only happens for an explicit base
+		// handler: Go's built-in slog default routes through the std log
+		// package, which can deadlock with the OTel exporter's own logging.
 		logHandler := otelslog.NewHandler(serviceName,
 			otelslog.WithLoggerProvider(lp),
 		)
-		slog.SetDefault(slog.New(logHandler))
+		if baseHandler != nil {
+			slog.SetDefault(slog.New(multiHandler{
+				handlers: []slog.Handler{baseHandler, logHandler},
+			}))
+		} else {
+			slog.SetDefault(slog.New(logHandler))
+		}
 	} else {
 		log.Printf("[telemetry] failed to create log exporter: %v, logs disabled", err)
 	}
@@ -225,7 +298,7 @@ func Shutdown(providers *Providers) {
 // InitTracerProvider is kept for backward compatibility. It initializes only
 // the tracer provider, delegating to InitTelemetry internally.
 func InitTracerProvider(dbEndpoint string) (*sdktrace.TracerProvider, error) {
-	p, err := InitTelemetry(dbEndpoint)
+	p, err := InitTelemetry(dbEndpoint, "", nil)
 	if err != nil {
 		return nil, err
 	}

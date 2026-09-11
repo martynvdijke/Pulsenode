@@ -2,8 +2,10 @@ package telemetry
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,7 +16,7 @@ import (
 
 func TestInitTelemetry_NoEndpoint(t *testing.T) {
 	os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	providers, err := InitTelemetry("")
+	providers, err := InitTelemetry("", "test", nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestBuildResource_WithAttributes(t *testing.T) {
 	os.Setenv("OTEL_RESOURCE_ATTRIBUTES", "env=test,region=us-east-1")
 	defer os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES")
 
-	res, err := buildResource("test-service")
+	res, err := buildResource("test-service", "1.0.0")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -135,7 +137,7 @@ func TestBuildResource_WithAttributes(t *testing.T) {
 func TestInitTelemetry_NoopFallback(t *testing.T) {
 	// When endpoint is empty, InitTelemetry should return a noop tracer provider
 	os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	providers, err := InitTelemetry("")
+	providers, err := InitTelemetry("", "test", nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -153,9 +155,42 @@ func TestInitTelemetry_ServiceNameDefault(t *testing.T) {
 	os.Unsetenv("OTEL_SERVICE_NAME")
 	os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
-	providers, err := InitTelemetry("")
+	providers, err := InitTelemetry("", "test", nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	Shutdown(providers)
+}
+
+// The configured DB/UI endpoint must actually reach the exporters, which read
+// the standard OTEL_EXPORTER_OTLP_ENDPOINT env var (they are created with no
+// options). Regression guard for the endpoint being silently ignored.
+func TestInitTelemetry_PublishesEndpointToEnv(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	providers, err := InitTelemetry("http://localhost:4317", "1.0.0", nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); got != "http://localhost:4317" {
+		t.Fatalf("expected exporter env endpoint to be published, got %q", got)
+	}
+	Shutdown(providers)
+}
+
+type recordingHandler struct{ n int }
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (h *recordingHandler) Handle(context.Context, slog.Record) error { h.n++; return nil }
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler             { return h }
+
+func TestMultiHandler_FansOut(t *testing.T) {
+	a, b := &recordingHandler{}, &recordingHandler{}
+	m := multiHandler{handlers: []slog.Handler{a, b}}
+	if err := m.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "x", 0)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if a.n != 1 || b.n != 1 {
+		t.Fatalf("expected both handlers to receive the record, got a=%d b=%d", a.n, b.n)
+	}
 }

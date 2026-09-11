@@ -212,11 +212,11 @@ type ServiceDef struct {
 }
 
 type HealthDef struct {
-	Test        any     `yaml:"test"`
-	Interval    string  `yaml:"interval,omitempty"`
-	Timeout     string  `yaml:"timeout,omitempty"`
-	Retries     int     `yaml:"retries,omitempty"`
-	StartPeriod string  `yaml:"start_period,omitempty"`
+	Test        any    `yaml:"test"`
+	Interval    string `yaml:"interval,omitempty"`
+	Timeout     string `yaml:"timeout,omitempty"`
+	Retries     int    `yaml:"retries,omitempty"`
+	StartPeriod string `yaml:"start_period,omitempty"`
 }
 
 type Compose struct {
@@ -238,24 +238,24 @@ type Progress struct {
 type ProgressFn func(p Progress)
 
 type ServiceInfo struct {
-	Name          string   `json:"name"`
-	ContainerName string   `json:"container_name"`
-	MonitorType   string   `json:"type"`
-	URL           string   `json:"url,omitempty"`
-	InKuma        bool     `json:"in_kuma"`
-	KumaID        int      `json:"kuma_id,omitempty"`
-	Image         string   `json:"image,omitempty"`
-	Ports         []string `json:"ports,omitempty"`
-	Environment   []string `json:"environment,omitempty"`
-	Volumes       []string `json:"volumes,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
+	Name          string            `json:"name"`
+	ContainerName string            `json:"container_name"`
+	MonitorType   string            `json:"type"`
+	URL           string            `json:"url,omitempty"`
+	InKuma        bool              `json:"in_kuma"`
+	KumaID        int               `json:"kuma_id,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	Ports         []string          `json:"ports,omitempty"`
+	Environment   []string          `json:"environment,omitempty"`
+	Volumes       []string          `json:"volumes,omitempty"`
+	DependsOn     []string          `json:"depends_on,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
-	Restart       string   `json:"restart,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Entrypoint    string   `json:"entrypoint,omitempty"`
-	User          string   `json:"user,omitempty"`
-	WorkingDir    string   `json:"working_dir,omitempty"`
-	HealthCheck   *HealthCheckInfo `json:"healthcheck,omitempty"`
+	Restart       string            `json:"restart,omitempty"`
+	Command       string            `json:"command,omitempty"`
+	Entrypoint    string            `json:"entrypoint,omitempty"`
+	User          string            `json:"user,omitempty"`
+	WorkingDir    string            `json:"working_dir,omitempty"`
+	HealthCheck   *HealthCheckInfo  `json:"healthcheck,omitempty"`
 
 	// ContainerState / ContainerStatus are populated from the Docker Engine
 	// (not the compose file) when the daemon is reachable.
@@ -407,8 +407,8 @@ func LoadServices(path string) (map[string]ServiceDef, error) {
 	return c.Services, nil
 }
 
-func GetDockerServicesWithStatus(composePath string, clients []kuma.InstanceClient) ([]ServiceInfo, error) {
-	_, span := tracer.Start(context.Background(), "GetDockerServicesWithStatus",
+func GetDockerServicesWithStatus(ctx context.Context, composePath string, clients []kuma.InstanceClient) ([]ServiceInfo, error) {
+	_, span := tracer.Start(ctx, "GetDockerServicesWithStatus",
 		trace.WithAttributes(attribute.String("compose_path", composePath)),
 	)
 	defer span.End()
@@ -507,7 +507,7 @@ func GetNPMProxyEntries(npmClients []npm.InstanceClient) ([]npm.ProxyEntry, erro
 	var result []npm.ProxyEntry
 	var errs []error
 	for _, nc := range npmClients {
-		entries, err := nc.Client.GetProxyHosts()
+		entries, err := nc.Client.GetProxyHosts(context.Background())
 		if err != nil {
 			logging.LogError("sync", "Failed to fetch proxy entries from NPM instance",
 				slog.Int("instance_id", nc.InstanceID),
@@ -531,8 +531,8 @@ func GetNPMProxyEntries(npmClients []npm.InstanceClient) ([]npm.ProxyEntry, erro
 	return result, errors.Join(errs...)
 }
 
-func GetNPMProxiesWithStatus(npmClients []npm.InstanceClient, clients []kuma.InstanceClient) ([]ProxyInfo, error) {
-	_, span := tracer.Start(context.Background(), "GetNPMProxiesWithStatus",
+func GetNPMProxiesWithStatus(ctx context.Context, npmClients []npm.InstanceClient, clients []kuma.InstanceClient) ([]ProxyInfo, error) {
+	_, span := tracer.Start(ctx, "GetNPMProxiesWithStatus",
 		trace.WithAttributes(attribute.Int("npm_instance_count", len(npmClients))),
 	)
 	defer span.End()
@@ -548,7 +548,7 @@ func GetNPMProxiesWithStatus(npmClients []npm.InstanceClient, clients []kuma.Ins
 	var npmEntries []npm.ProxyEntry
 	var npmErrs []error
 	for _, nc := range npmClients {
-		entries, err := nc.Client.GetProxyHosts()
+		entries, err := nc.Client.GetProxyHosts(ctx)
 		if err != nil {
 			logging.LogError("sync", "Failed to fetch proxy hosts from NPM instance",
 				slog.Int("instance_id", nc.InstanceID),
@@ -611,8 +611,8 @@ func GetNPMProxiesWithStatus(npmClients []npm.InstanceClient, clients []kuma.Ins
 	return result, errors.Join(npmErrs...)
 }
 
-func RunDockerSync(composePath string, clients []kuma.InstanceClient, database *db.DB, onProgress ProgressFn) db.SyncRun {
-	_, span := tracer.Start(context.Background(), "RunDockerSync",
+func RunDockerSync(ctx context.Context, composePath string, clients []kuma.InstanceClient, database *db.DB, onProgress ProgressFn) db.SyncRun {
+	_, span := tracer.Start(ctx, "RunDockerSync",
 		trace.WithAttributes(attribute.String("compose_path", composePath)),
 	)
 	defer span.End()
@@ -817,8 +817,8 @@ func RunDockerSync(composePath string, clients []kuma.InstanceClient, database *
 	return run
 }
 
-func RunNPMSync(npmClients []npm.InstanceClient, clients []kuma.InstanceClient, database *db.DB, onProgress ProgressFn) db.SyncRun {
-	_, span := tracer.Start(context.Background(), "RunNPMSync",
+func RunNPMSync(ctx context.Context, npmClients []npm.InstanceClient, clients []kuma.InstanceClient, database *db.DB, onProgress ProgressFn) db.SyncRun {
+	_, span := tracer.Start(ctx, "RunNPMSync",
 		trace.WithAttributes(attribute.Int("npm_instance_count", len(npmClients))),
 	)
 	defer span.End()
@@ -855,7 +855,7 @@ func RunNPMSync(npmClients []npm.InstanceClient, clients []kuma.InstanceClient, 
 	seen := make(map[string]bool)
 	var entries []npm.ProxyEntry
 	for _, nc := range npmClients {
-		ncEntries, err := nc.Client.GetProxyHosts()
+		ncEntries, err := nc.Client.GetProxyHosts(ctx)
 		if err != nil {
 			logging.LogWarn("sync", "Failed to fetch proxy entries from NPM instance",
 				slog.Int("instance_id", nc.InstanceID),

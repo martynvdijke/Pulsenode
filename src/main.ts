@@ -1,4 +1,5 @@
 // Synapse Dashboard — Entry point
+import './otel';
 import './dashboard.css';
 import './eink';
 import './api';

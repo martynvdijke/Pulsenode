@@ -19,9 +19,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
@@ -249,6 +249,7 @@ func (app *App) registerOIDCRoutes(r *gin.Engine) {
 	r.GET("/api/auth/oidc/callback", app.HandleOIDCCallback)
 	r.GET("/api/auth/oidc/status", app.HandleOIDCStatus)
 }
+
 // token on top of the session authentication applied by authMiddleware. It
 // stores the token id and owner id in the gin context for handlers that need
 // them. Failure aborts with 401 before any handler runs, so no write can occur.
@@ -458,7 +459,7 @@ func main() {
 		otelEndpoint = otelSettings.OTelEndpoint
 	}
 
-	providers, err := telemetry.InitTelemetry(otelEndpoint)
+	providers, err := telemetry.InitTelemetry(otelEndpoint, version, slog.Default().Handler())
 	if err != nil {
 		slog.Warn("telemetry initialization failed, continuing without tracing", "error", err)
 		providers = nil
@@ -676,7 +677,11 @@ func main() {
 	srv := &http.Server{Addr: addr, Handler: r}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			// Don't os.Exit here — that would skip the deferred telemetry
+			// shutdown and lose buffered spans. Cancel ctx so main() unwinds
+			// through the normal shutdown path.
+			log.Printf("server error: %v", err)
+			stop()
 		}
 	}()
 
@@ -1026,7 +1031,9 @@ func (app *App) RotateToken(c *gin.Context) {
 func (app *App) Dashboard(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.HTML(http.StatusOK, "index.html", gin.H{
-		"Version": version,
+		"Version":             version,
+		"OtelEnabled":         app.settings().OTelEnabled,
+		"OtelBrowserEndpoint": os.Getenv("OTEL_BROWSER_ENDPOINT"),
 	})
 }
 
@@ -1352,7 +1359,7 @@ func (app *App) TestNPM(c *gin.Context) {
 	}
 	clients, _ := app.kumaRegistry.All()
 	npmClients, _ := app.npmRegistry.All()
-	proxies, err := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+	proxies, err := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 	if err != nil && len(proxies) == 0 {
 		logging.LogError("app", "NPM connection test failed",
 			slog.String("npm_host", s.NPMHost),
@@ -1677,7 +1684,7 @@ func (app *App) TestNPMInstance(c *gin.Context) {
 		return
 	}
 	client := npm.NewClient(inst.URL, inst.Username, inst.Password)
-	proxies, err := client.GetProxyHosts()
+	proxies, err := client.GetProxyHosts(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "message": err.Error()})
 		return
@@ -1939,7 +1946,7 @@ func (app *App) Status(c *gin.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		npmProxies, npmFetchErr := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+		npmProxies, npmFetchErr := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 		mu.Lock()
 		npmCount = len(npmProxies)
 		if npmFetchErr != nil {
@@ -2004,7 +2011,7 @@ func (app *App) Status(c *gin.Context) {
 			cl, err := app.npmRegistry.Get(int(inst.ID))
 			if err != nil {
 				errMsg = err.Error()
-			} else if _, err := cl.GetProxyHosts(); err != nil {
+			} else if _, err := cl.GetProxyHosts(c.Request.Context()); err != nil {
 				errMsg = err.Error()
 			}
 			list = append(list, gin.H{
@@ -2112,7 +2119,7 @@ func (app *App) TrmnlStats(c *gin.Context) {
 	npmClients, _ := app.npmRegistry.All()
 	npmCount := 0
 	npmErr := ""
-	npmProxies, npmFetchErr := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+	npmProxies, npmFetchErr := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 	// Partial results are still served when only some instances fail.
 	npmCount = len(npmProxies)
 	if npmFetchErr != nil {
@@ -2162,7 +2169,7 @@ func (app *App) TrmnlStats(c *gin.Context) {
 func (app *App) Services(c *gin.Context) {
 	s := app.settings()
 	clients, _ := app.kumaRegistry.All()
-	result, err := synclib.GetDockerServicesWithStatus(s.ComposePath, clients)
+	result, err := synclib.GetDockerServicesWithStatus(c.Request.Context(), s.ComposePath, clients)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2208,7 +2215,7 @@ func (app *App) enrichWithContainerState(ctx context.Context, services []synclib
 func (app *App) Proxies(c *gin.Context) {
 	clients, _ := app.kumaRegistry.All()
 	npmClients, _ := app.npmRegistry.All()
-	result, err := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+	result, err := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 	if err != nil && len(result) == 0 {
 		// All instances failed — no partial results to serve.
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2227,24 +2234,24 @@ func (app *App) Proxies(c *gin.Context) {
 }
 
 type KumaMonitorSummary struct {
-	ID              int              `json:"id"`
-	Name            string           `json:"name"`
-	Type            string           `json:"type"`
-	URL             string           `json:"url,omitempty"`
-	DockerContainer string           `json:"docker_container,omitempty"`
-	Status          int              `json:"status,omitempty"`
-	Uptime24h       float64          `json:"uptime_24h,omitempty"`
-	Uptime7d        float64          `json:"uptime_7d,omitempty"`
-	Uptime1y        float64          `json:"uptime_1y,omitempty"`
-	AvgPing         float64          `json:"ping,omitempty"`
-	LastMsg         string           `json:"last_msg,omitempty"`
-	Interval        int              `json:"interval,omitempty"`
-	RetryInterval   int              `json:"retry_interval,omitempty"`
-	MaxRetries      int              `json:"maxretries,omitempty"`
-	Active          bool             `json:"active"`
+	ID              int               `json:"id"`
+	Name            string            `json:"name"`
+	Type            string            `json:"type"`
+	URL             string            `json:"url,omitempty"`
+	DockerContainer string            `json:"docker_container,omitempty"`
+	Status          int               `json:"status,omitempty"`
+	Uptime24h       float64           `json:"uptime_24h,omitempty"`
+	Uptime7d        float64           `json:"uptime_7d,omitempty"`
+	Uptime1y        float64           `json:"uptime_1y,omitempty"`
+	AvgPing         float64           `json:"ping,omitempty"`
+	LastMsg         string            `json:"last_msg,omitempty"`
+	Interval        int               `json:"interval,omitempty"`
+	RetryInterval   int               `json:"retry_interval,omitempty"`
+	MaxRetries      int               `json:"maxretries,omitempty"`
+	Active          bool              `json:"active"`
 	Tags            []kuma.MonitorTag `json:"tags,omitempty"`
-	InstanceID      int              `json:"instance_id"`
-	InstanceName    string           `json:"instance_name"`
+	InstanceID      int               `json:"instance_id"`
+	InstanceName    string            `json:"instance_name"`
 }
 
 func (app *App) KumaMonitors(c *gin.Context) {
@@ -2546,7 +2553,7 @@ func (app *App) Reconcile(c *gin.Context) {
 
 	npmClients, _ := app.npmRegistry.All()
 	kumaClients, _ := app.kumaRegistry.All()
-	result := synclib.RunReconcile(
+	result := synclib.RunReconcile(c.Request.Context(),
 		s.ComposePath, npmClients, kumaClients, app.database,
 		synclib.ReconcileOptions{DryRun: dryRun, OnlyService: input.Service},
 		nil,
@@ -2695,7 +2702,7 @@ func (app *App) DockerSync(c *gin.Context) {
 		}()
 
 		clients, _ := app.kumaRegistry.All()
-		synclib.RunDockerSync(s.ComposePath, clients, app.database, func(p synclib.Progress) {
+		synclib.RunDockerSync(context.Background(), s.ComposePath, clients, app.database, func(p synclib.Progress) {
 			app.mu.Lock()
 			for _, ch := range app.progressChans {
 				select {
@@ -2730,7 +2737,7 @@ func (app *App) NPMSync(c *gin.Context) {
 
 		clients, _ := app.kumaRegistry.All()
 		npmClients, _ := app.npmRegistry.All()
-		synclib.RunNPMSync(npmClients, clients, app.database, func(p synclib.Progress) {
+		synclib.RunNPMSync(context.Background(), npmClients, clients, app.database, func(p synclib.Progress) {
 			app.mu.Lock()
 			for _, ch := range app.progressChans {
 				select {
@@ -2792,7 +2799,7 @@ func (app *App) runScheduledSync() {
 		slog.Int("kuma_instances", len(clients)),
 	)
 
-	synclib.RunDockerSync(s.ComposePath, clients, app.database, func(p synclib.Progress) {
+	synclib.RunDockerSync(context.Background(), s.ComposePath, clients, app.database, func(p synclib.Progress) {
 		logging.LogDebug("app", "Docker sync progress",
 			slog.Int("current", p.Current),
 			slog.Int("total", p.Total),
@@ -2804,7 +2811,7 @@ func (app *App) runScheduledSync() {
 	log.Println("scheduler: starting periodic npm sync")
 
 	npmClients, _ := app.npmRegistry.All()
-	synclib.RunNPMSync(npmClients, clients, app.database, func(p synclib.Progress) {
+	synclib.RunNPMSync(context.Background(), npmClients, clients, app.database, func(p synclib.Progress) {
 		log.Printf("[scheduler] npm sync: [%d/%d] %s - %s", p.Current, p.Total, p.Status, p.Message)
 	})
 
@@ -2876,12 +2883,12 @@ func (app *App) runNotifyCheck(ctx context.Context) {
 
 	var dockerItems, npmItems []notify.Item
 	if !degraded {
-		services, sErr := synclib.GetDockerServicesWithStatus(s.ComposePath, clients)
+		services, sErr := synclib.GetDockerServicesWithStatus(ctx, s.ComposePath, clients)
 		if sErr != nil {
 			degraded = true
 			reasons = append(reasons, fmt.Sprintf("compose load failed: %v", sErr))
 		}
-		proxies, pErr := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+		proxies, pErr := synclib.GetNPMProxiesWithStatus(ctx, npmClients, clients)
 		if pErr != nil {
 			degraded = true
 			reasons = append(reasons, fmt.Sprintf("NPM proxy fetch failed: %v", pErr))
@@ -3322,7 +3329,7 @@ func (app *App) runScheduledReconcile(ctx context.Context) {
 	s := app.settings()
 	npmClients, _ := app.npmRegistry.All()
 	kumaClients, _ := app.kumaRegistry.All()
-	result := synclib.RunReconcile(
+	result := synclib.RunReconcile(ctx,
 		s.ComposePath, npmClients, kumaClients, app.database,
 		synclib.ReconcileOptions{DryRun: s.ReconcileDryRunDefault},
 		nil,
@@ -3450,12 +3457,12 @@ func (app *App) NotifyMissing(c *gin.Context) {
 
 	var dockerItems, npmItems []notify.Item
 	if !degraded {
-		services, sErr := synclib.GetDockerServicesWithStatus(s.ComposePath, clients)
+		services, sErr := synclib.GetDockerServicesWithStatus(c.Request.Context(), s.ComposePath, clients)
 		if sErr != nil {
 			degraded = true
 			reasons = append(reasons, fmt.Sprintf("compose load failed: %v", sErr))
 		}
-		proxies, pErr := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+		proxies, pErr := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 		if pErr != nil {
 			degraded = true
 			reasons = append(reasons, fmt.Sprintf("NPM proxy fetch failed: %v", pErr))
@@ -3621,7 +3628,7 @@ func (app *App) resolveNPMEntries(npmInstanceIDs string) []npm.ProxyEntry {
 			return allEntries
 		}
 		for _, c := range clients {
-			entries, err := c.Client.GetProxyHosts()
+			entries, err := c.Client.GetProxyHosts(context.Background())
 			if err != nil {
 				continue
 			}
@@ -3635,7 +3642,7 @@ func (app *App) resolveNPMEntries(npmInstanceIDs string) []npm.ProxyEntry {
 		if err != nil {
 			continue
 		}
-		entries, err := client.GetProxyHosts()
+		entries, err := client.GetProxyHosts(context.Background())
 		if err != nil {
 			continue
 		}
@@ -3736,7 +3743,7 @@ func (app *App) AutheliaStatus(c *gin.Context) {
 	var npmCNAMEs []string
 	clients, _ := app.kumaRegistry.All()
 	npmClients, _ := app.npmRegistry.All()
-	proxies, npmErr := synclib.GetNPMProxiesWithStatus(npmClients, clients)
+	proxies, npmErr := synclib.GetNPMProxiesWithStatus(c.Request.Context(), npmClients, clients)
 	if npmErr != nil {
 		// Partial failure: use whatever was fetched, log the aggregate error.
 		logging.LogError("app", "Partial NPM proxy fetch failure in Authelia status",

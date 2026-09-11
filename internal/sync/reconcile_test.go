@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -165,7 +166,7 @@ func TestRunReconcileCreatesMissing(t *testing.T) {
 	npmIC, npmRec := mockNpmReconcile(t, 1, nil)
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, nil)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 
@@ -237,7 +238,7 @@ func TestRunReconcileDryRun(t *testing.T) {
 	npmIC, npmRec := mockNpmReconcile(t, 1, nil)
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, nil)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: true}, func(p Progress) {})
 
@@ -283,7 +284,7 @@ func TestRunReconcileUpdatesDrift(t *testing.T) {
 	}}
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, monitors)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 
@@ -333,7 +334,7 @@ func TestRunReconcileNoDrift(t *testing.T) {
 	npmIC, npmRec := mockNpmReconcile(t, 1, hosts)
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, monitors)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 
@@ -365,7 +366,7 @@ func TestRunReconcileOnlyServiceFilter(t *testing.T) {
 	npmIC, npmRec := mockNpmReconcile(t, 1, nil)
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, nil)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false, OnlyService: "web"}, func(p Progress) {})
 
@@ -401,7 +402,7 @@ func TestRunReconcileUnlinkedServiceUntouched(t *testing.T) {
 	npmIC, npmRec := mockNpmReconcile(t, 1, nil)
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, nil)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 
@@ -451,7 +452,7 @@ func TestRunReconcileFailedCreate(t *testing.T) {
 	t.Cleanup(srv.Close)
 	npmIC := npm.InstanceClient{InstanceID: 1, Client: npm.NewClient(srv.URL, "user", "pass")}
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, nil, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 
@@ -474,7 +475,7 @@ func TestRunReconcileFailedCreate(t *testing.T) {
 
 func TestRunReconcileNoLinks(t *testing.T) {
 	d := setupTestDB(t)
-	result := RunReconcile(writeReconcileCompose(t), nil, nil, d,
+	result := RunReconcile(context.Background(), writeReconcileCompose(t), nil, nil, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 	if result.Run.Status != "completed" {
 		t.Errorf("expected completed, got %q", result.Run.Status)
@@ -492,7 +493,7 @@ func TestRunReconcileOnlyServiceNotLinked(t *testing.T) {
 	npmIC, _ := mockNpmReconcile(t, 1, nil)
 	kumaIC, _ := mockKumaReconcile(t, 1, nil)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false, OnlyService: "nosuch"}, func(p Progress) {})
 
@@ -663,7 +664,7 @@ func TestRunReconcileSkipsPausedMonitor(t *testing.T) {
 	}}
 	kumaIC, kumaRec := mockKumaReconcile(t, 1, monitors)
 
-	result := RunReconcile(writeReconcileCompose(t),
+	result := RunReconcile(context.Background(), writeReconcileCompose(t),
 		[]npm.InstanceClient{npmIC}, []kuma.InstanceClient{kumaIC}, d,
 		ReconcileOptions{DryRun: false}, func(p Progress) {})
 

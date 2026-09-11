@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1465,7 +1466,7 @@ func TestEventsFeed(t *testing.T) {
 	}
 
 	// Run reconcile directly to persist a run (no links → completed).
-	synclib.RunReconcile("testdata/docker-compose.yml", nil, nil, app.database, synclib.ReconcileOptions{DryRun: true}, nil)
+	synclib.RunReconcile(context.Background(), "testdata/docker-compose.yml", nil, nil, app.database, synclib.ReconcileOptions{DryRun: true}, nil)
 
 	req := authRequest(t, "GET", "/api/events", "", sessionID)
 	w := httptest.NewRecorder()
